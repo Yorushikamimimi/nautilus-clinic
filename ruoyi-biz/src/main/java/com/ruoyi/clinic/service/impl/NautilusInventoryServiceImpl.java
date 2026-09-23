@@ -101,6 +101,13 @@ public class NautilusInventoryServiceImpl extends ServiceImpl<NautilusInventoryM
         // =======================================================
         @Override
         public boolean decreaseStock(String itemCode, int quantity) {
+                if (itemCode == null || itemCode.trim().isEmpty()) {
+                        throw new ServiceException("药品编码不能为空");
+                }
+                if (quantity <= 0) {
+                        throw new ServiceException("扣减库存数量必须大于0");
+                }
+                itemCode = itemCode.trim();
                 log.info("💊 [DEDUCTION] Attempting to deduct {} unit(s) of itemCode=[{}]", quantity, itemCode);
 
                 // 原子扣减：UPDATE ... SET current_stock = current_stock - quantity

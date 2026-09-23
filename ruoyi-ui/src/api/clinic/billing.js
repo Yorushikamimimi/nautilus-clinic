@@ -1,6 +1,6 @@
 import request from '@/utils/request'
 
-/** 查询所有有待缴费处方的患者列表（返回 {patientId, patientName}） */
+/** 查询待本地模拟结算的处方列表 */
 export function getPendingPatients() {
     return request({
         url: '/clinic/billing/pending-patients',
@@ -8,28 +8,20 @@ export function getPendingPatients() {
     })
 }
 
-/** 按患者ID查询最新待缴费处方明细 */
-export function getPrescription(patientId) {
+/** 按就诊单ID查询待结算处方明细 */
+export function getPrescription(consultationId) {
     return request({
         url: '/clinic/billing/prescription',
         method: 'get',
-        params: { patientId }
+        params: { consultationId }
     })
 }
 
-/** 生成账单流水号 */
-export function generateBill() {
+/** 确认本地模拟结算并发药，不代表真实支付或医保结算 */
+export function confirmSimulatedSettlement(consultationId) {
     return request({
-        url: '/clinic/billing/generate',
-        method: 'get'
-    })
-}
-
-/** 确认医保支付 */
-export function payBill(billNo, patientId) {
-    return request({
-        url: '/clinic/billing/pay',
+        url: '/clinic/billing/confirm',
         method: 'post',
-        params: { billNo, patientId }
+        params: { consultationId }
     })
 }

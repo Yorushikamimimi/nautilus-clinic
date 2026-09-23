@@ -14,7 +14,7 @@
 
           <div v-if="!prescriptionItems.length" style="text-align:center; color:#c0c4cc; padding: 40px 0;">
             <i class="el-icon-document" style="font-size: 40px;"></i>
-            <p>请先在右侧选择患者</p>
+            <p>请先选择待结算处方</p>
           </div>
 
           <el-table v-else :data="prescriptionItems" border stripe>
@@ -29,61 +29,51 @@
         </el-card>
       </el-col>
 
-      <!-- 右栏：结算控制台 (40%) -->
+      <!-- 右栏：本地模拟结算控制台 (40%) -->
       <el-col :span="10">
         <el-card shadow="hover">
           <div slot="header" style="font-weight: bold; font-size: 16px;">
-            <i class="el-icon-bank-card" style="margin-right: 6px;"></i>医保结算控制台
+            <i class="el-icon-bank-card" style="margin-right: 6px;"></i>本地模拟结算
           </div>
 
           <el-form :model="form" label-width="100px" style="margin-top: 10px;">
-            <el-form-item label="选择患者">
+            <el-form-item label="选择就诊单">
               <el-select
-                v-model="form.patientId"
-                placeholder="请选择待缴费患者"
+                v-model="form.consultationId"
+                placeholder="请选择待模拟结算处方"
                 style="width: 100%;"
                 :loading="loadingPatients"
-                @change="handlePatientChange"
+                @change="handleConsultationChange"
               >
                 <el-option
                   v-for="p in pendingPatients"
-                  :key="p.patientId"
-                  :label="p.patientName"
-                  :value="p.patientId"
+                  :key="p.consultationId"
+                  :label="formatConsultationOption(p)"
+                  :value="p.consultationId"
                 />
               </el-select>
-            </el-form-item>
-            <el-form-item label="账单流水号">
-              <el-input
-                v-model="form.billNo"
-                readonly
-                placeholder="点击下方按钮生成"
-              />
             </el-form-item>
           </el-form>
 
           <div style="display: flex; flex-direction: column; gap: 12px; padding: 0 20px 10px;">
             <el-button
-              type="primary"
-              icon="el-icon-refresh"
-              style="width: 100%;"
-              :disabled="!form.patientId"
-              @click="handleGenerateBill"
-            >
-              1. 获取账单流水号
-            </el-button>
-
-            <el-button
               type="success"
               icon="el-icon-check"
               style="width: 100%;"
               :loading="paying"
-              :disabled="!form.billNo"
-              @click="handlePay"
+              :disabled="!form.consultationId"
+              @click="handleConfirmSettlement"
             >
-              2. 确认医保支付
+              确认本地模拟结算并发药
             </el-button>
           </div>
+          <el-alert
+            title="此操作仅更新本地就诊单状态并扣减库存，不会产生真实账单或支付。"
+            type="info"
+            :closable="false"
+            show-icon
+            style="margin: 12px 20px 0;"
+          />
 
           <el-alert
             v-if="payResult"
@@ -100,7 +90,7 @@
 </template>
 
 <script>
-import { getPendingPatients, getPrescription, generateBill, payBill } from '@/api/clinic/billing'
+import { getPendingPatients, getPrescription, confirmSimulatedSettlement } from '@/api/clinic/billing'
 
 export default {
   name: 'ClinicBilling',
@@ -109,12 +99,11 @@ export default {
       loadingPatients: false,
       paying: false,
       payResult: null,
-      pendingPatients: [],      // [{patientId, patientName}, ...]
+      pendingPatients: [],      // [{consultationId, patientId, patientName}, ...]
       prescriptionItems: [],
       selectedPatientName: '',
       form: {
-        patientId: '',
-        billNo: ''
+        consultationId: ''
       }
     }
   },
@@ -122,15 +111,21 @@ export default {
     this.loadPendingPatients()
   },
   activated() {
-    // 从其他页面切回时自动刷新待缴费列表
+    // 从其他页面切回时自动刷新待模拟结算列表
     this.loadPendingPatients()
     this.prescriptionItems = []
     this.selectedPatientName = ''
-    this.form.patientId = ''
-    this.form.billNo = ''
+    this.form.consultationId = ''
     this.payResult = null
   },
   methods: {
+    formatConsultationOption(consultation) {
+      const createdAt = consultation.createTime
+        ? String(consultation.createTime).replace('T', ' ').slice(0, 16)
+        : '时间未记录'
+      return `${consultation.patientName} · ${createdAt} · 就诊单 ${consultation.consultationId}`
+    },
+
     loadPendingPatients() {
       this.loadingPatients = true
       getPendingPatients().then(res => {
@@ -142,50 +137,32 @@ export default {
       })
     },
 
-    handlePatientChange(patientId) {
+    handleConsultationChange(consultationId) {
       this.prescriptionItems = []
-      this.form.billNo = ''
       this.payResult = null
-      // 找到选中患者的姓名用于显示
-      const found = this.pendingPatients.find(p => p.patientId === patientId)
+      const found = this.pendingPatients.find(p => p.consultationId === consultationId)
       this.selectedPatientName = found ? found.patientName : ''
-      if (!patientId) return
-      getPrescription(patientId).then(res => {
+      if (!consultationId) return
+      getPrescription(consultationId).then(res => {
         this.prescriptionItems = res.data || []
       }).catch(err => {
         this.$modal.msgError(err.msg || '加载处方失败')
       })
     },
 
-    handleGenerateBill() {
-      this.payResult = null
-      this.form.billNo = ''
-      generateBill().then(res => {
-        this.form.billNo = res.data
-        this.$modal.msgSuccess('账单流水号已生成：' + res.data)
-      }).catch(err => {
-        this.$modal.msgError(err.msg || '流水号生成失败')
-      })
-    },
-
-    handlePay() {
-      if (!this.form.billNo) {
-        this.$modal.msgWarning('请先获取账单流水号')
-        return
-      }
+    handleConfirmSettlement() {
       this.paying = true
       this.payResult = null
-      payBill(this.form.billNo, this.form.patientId).then(() => {
-        this.payResult = { type: 'success', message: `✅ 患者 ${this.selectedPatientName} 结算成功，库存已同步扣减！` }
-        this.$modal.msgSuccess('支付成功！')
-        // 结算成功：重置页面，刷新待缴费患者列表
-        this.form.billNo = ''
-        this.form.patientId = ''
+      confirmSimulatedSettlement(this.form.consultationId).then(() => {
+        this.payResult = { type: 'success', message: `患者 ${this.selectedPatientName} 本地模拟结算确认成功，库存已扣减。` }
+        this.$modal.msgSuccess('本地模拟结算确认成功')
+        // 确认成功后刷新待结算列表
+        this.form.consultationId = ''
         this.selectedPatientName = ''
         this.prescriptionItems = []
         this.loadPendingPatients()
       }).catch(err => {
-        const msg = err.msg || err.message || '支付失败'
+        const msg = err.msg || err.message || '模拟结算确认失败'
         this.payResult = { type: 'error', message: `❌ ${msg}` }
         this.$modal.msgError(msg)
       }).finally(() => {

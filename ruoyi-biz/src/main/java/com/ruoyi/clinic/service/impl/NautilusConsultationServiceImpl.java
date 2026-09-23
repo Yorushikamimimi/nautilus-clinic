@@ -3,9 +3,8 @@ package com.ruoyi.clinic.service.impl;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.ruoyi.clinic.domain.NautilusConsultation;
-import com.ruoyi.clinic.domain.NautilusInventory;
 import com.ruoyi.clinic.mapper.NautilusConsultationMapper;
-import com.ruoyi.clinic.mapper.NautilusInventoryMapper;
+import com.ruoyi.clinic.service.INautilusInventoryService;
 import com.ruoyi.clinic.service.INautilusConsultationService;
 import com.ruoyi.clinic.service.NautilusNotificationService;
 import com.ruoyi.clinic.util.PrescriptionUtils;
@@ -16,6 +15,8 @@ import com.ruoyi.clinic.domain.dto.QuickConsultationDTO;
 import com.ruoyi.clinic.domain.NautilusPatient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.List;
 import java.util.Map;
@@ -28,20 +29,19 @@ import java.util.Map;
 public class NautilusConsultationServiceImpl extends ServiceImpl<NautilusConsultationMapper, NautilusConsultation>
                 implements INautilusConsultationService {
 
-        private final NautilusInventoryMapper inventoryMapper;
+        private final INautilusInventoryService inventoryService;
         private final NautilusNotificationService notificationService;
         private final INautilusPatientService patientService;
 
         @Override
         @Transactional(rollbackFor = Exception.class)
         public void dispenseMedication(Long consultationId) {
+                if (consultationId == null) {
+                        throw new ServiceException("就诊单ID不能为空");
+                }
                 NautilusConsultation consultation = this.getById(consultationId);
                 if (consultation == null) {
                         throw new ServiceException("就诊单不存在");
-                }
-
-                if (!"1".equals(consultation.getStatus())) {
-                        throw new ServiceException("处方状态不合法，必须为已开具(1)状态才能发药");
                 }
 
                 List<Map<String, Object>> payload = consultation.getPrescriptionPayload();
@@ -49,36 +49,41 @@ public class NautilusConsultationServiceImpl extends ServiceImpl<NautilusConsult
                         throw new ServiceException("处方内未包含任何药品信息");
                 }
 
-                for (Map<String, Object> item : payload) {
-                        String itemCode = (String) item.get("itemCode");
-                        Object qtyObj = item.get("quantity");
-                        if (itemCode == null || qtyObj == null) {
-                                continue;
-                        }
+                // Claim the pending consultation with a conditional update. The row lock
+                // held until transaction completion makes concurrent callers single-winner.
+                int claimed = this.baseMapper.update(null,
+                                new LambdaUpdateWrapper<NautilusConsultation>()
+                                                .eq(NautilusConsultation::getConsultationId, consultationId)
+                                                .eq(NautilusConsultation::getStatus, "1")
+                                                .set(NautilusConsultation::getStatus, "2"));
+                if (claimed != 1) {
+                        throw new ServiceException("该就诊单已处理或状态不合法");
+                }
 
-                        int quantity = PrescriptionUtils.parseQuantity(qtyObj);
+                List<String> dispensedNames = new java.util.ArrayList<>();
+                for (Map<String, Object> item : payload) {
+                        String itemCode = PrescriptionUtils.requireItemCode(item.get("itemCode"));
+                        int quantity = PrescriptionUtils.parseQuantity(item.get("quantity"));
                         // quantity is int primitive, safe from SQL injection
                         // If this ever accepts external string input, switch to apply("{0}", value)
-                        LambdaUpdateWrapper<NautilusInventory> updateWrapper = new LambdaUpdateWrapper<>();
-                        updateWrapper.eq(NautilusInventory::getItemCode, itemCode)
-                                        .ge(NautilusInventory::getCurrentStock, quantity)
-                                        .setSql("current_stock = current_stock - " + quantity);
-
-                        int rows = inventoryMapper.update(null, updateWrapper);
-                        if (rows == 0) {
-                                throw new ServiceException("库存不足或物资不存在，发药失败：[" + itemCode + "]");
-                        }
+                        inventoryService.decreaseStock(itemCode, quantity);
 
                         // 发出异步通知
                         String itemName = (String) item.get("itemName");
                         if (itemName == null)
                                 itemName = itemCode;
-                        notificationService.sendDispenseSms(consultation.getPatientId(), itemName);
+                        dispensedNames.add(itemName);
                 }
 
-                // 扭转状态机
-                consultation.setStatus("2");
-                this.updateById(consultation);
+                Long patientId = consultation.getPatientId();
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                                dispensedNames.forEach(itemName ->
+                                                notificationService.sendDispenseSms(patientId, itemName));
+                        }
+                });
+
         }
 
         @Override
